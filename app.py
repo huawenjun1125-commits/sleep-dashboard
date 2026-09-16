@@ -62,6 +62,7 @@ try:
         states,zctas=get_geography()
 except Exception as exc:
     st.error(f'Could not prepare the dashboard: {exc}')
+    st.exception(exc)
     st.info('Check your CSV and internet connection. Boundary files can also be rebuilt with: python data_pipeline.py')
     st.stop()
 
