@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / 'data'
 CSV = ROOT / 'places_zcta_selected_cleaned_wide.csv'
 SLEEP = 'Short sleep duration among adults'
+INDICATORS = {
+    'Sleep': SLEEP,
+    'Obesity': 'Obesity among adults',
+    'Depression': 'Depression among adults',
+    'Stroke': 'Stroke among adults',
+}
 BASE = 'https://www2.census.gov/geo/tiger/GENZ2020/shp/'
 FILES = {'zcta':'cb_2020_us_zcta520_500k.zip', 'state':'cb_2020_us_state_500k.zip'}
 
@@ -83,11 +89,15 @@ def prepare_boundaries():
 
 def load_dataset(path=CSV):
     raw = pd.read_csv(path,dtype={'LocationName':'string'})
-    if not {'LocationName',SLEEP}.issubset(raw.columns):
-        raise ValueError('CSV must contain LocationName and '+SLEEP)
+    missing = set(['LocationName', *INDICATORS.values()]) - set(raw.columns)
+    if missing:
+        raise ValueError('Missing CSV columns: ' + ', '.join(sorted(missing)))
+    for column in INDICATORS.values():
+        values = pd.to_numeric(raw[column], errors='coerce')
+        raw[column] = values.where(values.between(0, 100))
     raw['zcta'] = raw.LocationName.str.strip().str.zfill(5)
     raw['rate'] = pd.to_numeric(raw[SLEEP], errors='coerce')
-    valid = raw.zcta.str.fullmatch(r'\d{5}',na=False) & raw.rate.between(0,100)
+    valid = raw.zcta.str.fullmatch(r'\d{5}',na=False)
     data = raw.loc[valid].copy()
     if data.zcta.duplicated().any():
         raise ValueError('Duplicate ZCTAs: use one year and one estimate type.')
@@ -96,11 +106,12 @@ def load_dataset(path=CSV):
     mapping = pd.read_csv(DATA/'zcta_state_mapping.csv',dtype={'zcta':str})
     data = data.merge(mapping,on='zcta',how='left',validate='one_to_one')
     stats = data.dropna(subset=['state']).groupby(['state','state_name'],as_index=False).agg(
-        rate=('rate','mean'), n=('zcta','size'))
+        rate=('rate','mean'), n=('rate','count'))
     report = {'input_rows':len(raw),'valid_rows':len(data),'invalid_rows':int((~valid).sum()),
               'unmatched_rows':int(data.state.isna().sum()),
               'matched_states':len(stats),'national_mean':float(data.rate.mean()),
-              'cross_boundary_rows':int((data.parts.fillna(0)>1).sum())}
+              'cross_boundary_rows':int((data.parts.fillna(0)>1).sum()),
+              'missing_by_indicator':{name:int(data[col].isna().sum()) for name,col in INDICATORS.items()}}
     return data,stats,report
 
 

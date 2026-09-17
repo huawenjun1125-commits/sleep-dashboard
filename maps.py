@@ -17,20 +17,22 @@ def alaska_west(geometry):
 
 
 def make_map(frame, id_col, name_col, vmin, vmax, selected=None,
-             national=False, alaska=False, bounds=None):
+             national=False, alaska=False, bounds=None, indicator_label='Short sleep duration'):
     frame=frame.copy()
     if alaska:
         frame.geometry=frame.geometry.map(alaska_west)
     frame['Region']=frame[name_col].astype(str)
-    frame['Short sleep']=frame.rate.map(lambda x: 'No data' if pd.isna(x) else f'{x:.2f}%')
-    fields=['Region','Short sleep']
+    frame['Indicator rate']=frame.rate.map(lambda x: 'No data' if pd.isna(x) else f'{x:.2f}%')
+    fields=['Region','Indicator rate']
+    frame['Indicator']=indicator_label
+    fields.insert(1, 'Indicator')
     if 'n' in frame:
         frame['Valid ZCTAs']=frame.n.fillna(0).astype(int)
         fields.append('Valid ZCTAs')
     if national:
         frame['navigate']=frame[id_col].map(lambda x:f'STATE:{x}')
     cmap=LinearColormap(['#edf8fb','#b2e2e2','#66c2a4','#238b45','#005824'],vmin=vmin,vmax=max(vmax,vmin+0.01))
-    cmap.caption='Short sleep duration (%) — same scale across maps at this level'
+    cmap.caption=f'{indicator_label} (%) — same scale across maps at this level'
     m=folium.Map(location=[39,-98],zoom_start=4,tiles=None,prefer_canvas=True,
                  control_scale=True,zoom_control=True)
     folium.TileLayer('OpenStreetMap', name='Optional street basemap',show=False).add_to(m)

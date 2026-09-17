@@ -6,12 +6,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from streamlit_folium import st_folium
-from data_pipeline import CSV, DATA, prepare_boundaries, load_dataset
+from data_pipeline import CSV, DATA, prepare_boundaries, load_dataset, INDICATORS
 from maps import make_map
 
-st.set_page_config(page_title='ZCTA Sleep Monitor',page_icon='🌙',layout='wide')
-st.title('ZCTA Sleep Monitor')
-st.write('Short sleep duration among adults · CDC PLACES · National, state and ZCTA comparisons')
+st.set_page_config(page_title='ZCTA Health Monitor',page_icon='🌙',layout='wide')
+st.title('ZCTA Health Monitor')
+st.write('Sleep · Obesity · Depression · Stroke · CDC PLACES · National, state and ZCTA comparisons')
 
 @st.cache_data(show_spinner=False)
 def get_data(path, modified):
@@ -112,94 +112,137 @@ if st.session_state.zcta not in zcta_options:
     st.session_state.zcta='All'
 st.sidebar.selectbox('ZCTA',zcta_options,key='zcta',disabled=selected_state=='US',on_change=zcta_changed)
 selected_zcta=st.session_state.zcta
-national_mean=float(data.rate.mean())
-if selected_state=='US':
-    title='United States'; value=national_mean; reference=None
-elif selected_zcta=='All':
-    title=state_names[selected_state]; value=float(subset.rate.mean()); reference=national_mean
-else:
-    title=f'ZCTA {selected_zcta}'; value=float(subset.loc[subset.zcta==selected_zcta,'rate'].iloc[0]); reference=float(subset.rate.mean())
+# All four KPIs remain visible regardless of the active chart tab.
+area_title = 'United States' if selected_state == 'US' else state_names[selected_state]
+if selected_zcta != 'All':
+    area_title += f' · ZCTA {selected_zcta}'
+st.subheader(area_title)
 
-c1,c2,c3=st.columns(3)
-c1.metric(f'Short sleep · {title}',f'{value:.2f}%',
-          None if reference is None else f'{value-reference:+.2f} percentage points',delta_color='inverse')
-c2.metric('National ZCTA mean' if selected_zcta=='All' else f'{state_names[selected_state]} ZCTA mean',
-          f'{national_mean if reference is None else reference:.2f}%')
-c3.metric('Valid ZCTAs in scope',f'{len(subset):,}')
-st.caption('Means give every valid ZCTA equal weight; these are not population-weighted or official state/national prevalence estimates. Differences are descriptive, not significance tests.')
-if report['invalid_rows'] or report['unmatched_rows']:
-    st.warning(f"Invalid rows excluded: {report['invalid_rows']:,}. ZCTAs without state mapping: {report['unmatched_rows']:,}; these remain in the national mean but cannot appear in state views.")
+def format_rate(value):
+    return 'No data' if pd.isna(value) else f'{value:.2f}%'
 
-st.subheader('Geographic pattern')
-st.caption('Hover to see values. Click a state on the national map to open its ZCTAs. Red outlines mark the selected area. Gray means no data.')
-
-# Use a common color scale for all state maps and another common scale for all ZCTA maps.
-def show_national_panel(frame,label,height=470,alaska=False,bounds=None):
-    st.markdown(f'**{label}**')
-    frame=frame.merge(summary[['state','rate','n']],on='state',how='left')
-    m=make_map(frame,'state','state_name',float(summary.rate.min()),float(summary.rate.max()),
-               selected_state,national=True,alaska=alaska,bounds=bounds)
-    event=st_folium(m,key=f"national_{label}_{st.session_state.map_epoch}",height=height,
-                   use_container_width=True,returned_objects=['last_object_clicked_popup'])
-    clicked=re.search(r'STATE:([A-Z]{2})',str(event.get('last_object_clicked_popup','')))
-    if clicked:
-        code=clicked.group(1)
-        if code in options:
-            st.session_state['_pending_state']=code
-            st.rerun()
-        else:
-            st.info('This area has no valid ZCTA estimates in the uploaded dataset.')
-
-if st.session_state.map_depth=='national' or selected_state=='US':
-    contiguous=states[~states.state.isin(['AK','HI','PR','GU','VI','MP','AS'])]
-    show_national_panel(contiguous,'Contiguous United States',500,bounds=[[24,-125],[50,-66]])
-    extras=['AK','HI']+[s for s in ['PR','GU','VI','MP','AS'] if s in summary.state.values]
-    panels=st.columns(min(len(extras),3))
-    for i,code in enumerate(extras):
-        with panels[i%len(panels)]:
-            show_national_panel(states[states.state==code],state_names[code],260,alaska=code=='AK')
-else:
-    st.button('← Back to national map',on_click=back_to_national)
-    st.markdown(f'**{state_names[selected_state]} · ZCTAs**')
-    shape=state_shapes(selected_state).merge(data[['zcta','rate']],on='zcta',how='left',validate='one_to_one')
-    if shape.empty:
-        st.info('No ZCTA boundaries available for this state.')
+for card, (name, column) in zip(st.columns(4), INDICATORS.items()):
+    national = data[column].mean()
+    state_mean = subset[column].mean()
+    if selected_state == 'US':
+        current, benchmark, benchmark_name = national, None, 'National ZCTA mean'
+    elif selected_zcta == 'All':
+        current, benchmark, benchmark_name = state_mean, national, 'National ZCTA mean'
     else:
-        m=make_map(shape,'zcta','zcta',float(data.rate.min()),float(data.rate.max()),
-                   None if selected_zcta=='All' else selected_zcta,alaska=selected_state=='AK')
-        st_folium(m,key=f"state_{selected_state}_{selected_zcta}_{st.session_state.map_epoch}",
-                  height=540,use_container_width=True,returned_objects=[])
-    st.caption('State-map clicks do not drill down. Use the ZCTA selector to choose a specific area.')
+        current = subset.loc[subset.zcta == selected_zcta, column].iloc[0]
+        benchmark, benchmark_name = state_mean, f'{state_names[selected_state]} ZCTA mean'
+    delta = None if benchmark is None or pd.isna(current) or pd.isna(benchmark) else f'{current-benchmark:+.2f} pp'
+    with card:
+        st.metric(f'{name} rate', format_rate(current), delta, delta_color='inverse')
+        if benchmark is None:
+            st.caption('National overview · no comparison')
+        else:
+            st.caption(f'Compared with {benchmark_name}: {format_rate(benchmark)}')
+        st.caption(f'{subset[column].notna().sum():,} valid ZCTAs in scope')
 
-st.divider()
-left,right=st.columns(2)
-chart_data=summary.rename(columns={'state_name':'Region'}) if selected_state=='US' else subset.rename(columns={'zcta':'Region'})
-with left:
-    st.subheader('Distribution of state means' if selected_state=='US' else f'ZCTA distribution · {state_names[selected_state]}')
-    fig=px.histogram(chart_data,x='rate',nbins=20,color_discrete_sequence=['#318b83'],
-                     labels={'rate':'Short sleep duration (%)'})
-    fig.update_layout(yaxis_title='States / district' if selected_state=='US' else 'ZCTAs',bargap=0.06,margin=dict(l=10,r=10,t=30,b=10))
-    if selected_state!='US':
-        fig.add_vline(x=float(subset.rate.mean()),line_dash='dash',line_color='#475569',annotation_text='State mean')
-    if selected_zcta!='All':
-        fig.add_vline(x=value,line_color='#dc2626',annotation_text=f'ZCTA {selected_zcta}')
-    st.plotly_chart(fig,width='stretch')
-with right:
-    st.subheader('Top 10 states / district' if selected_state=='US' else 'Top 10 ZCTAs in this state')
-    top=chart_data.nlargest(10,'rate').sort_values('rate')
-    fig=px.bar(top,x='rate',y='Region',orientation='h',text='rate',labels={'rate':'Short sleep duration (%)'})
-    fig.update_traces(marker_color=['#dc2626' if str(x)==selected_zcta else '#318b83' for x in top.Region],texttemplate='%{x:.1f}%',textposition='outside',cliponaxis=False)
-    fig.update_layout(yaxis=dict(type='category',title=None),xaxis_range=[0,float(top.rate.max())*1.17],margin=dict(l=10,r=10,t=30,b=10))
-    st.plotly_chart(fig,width='stretch')
-st.caption('Rankings use point estimates; uncertainty intervals are not available in this CSV.')
+st.caption('pp = percentage points. Each mean gives valid ZCTAs equal weight; these are not population-weighted or official state/national prevalence estimates. Differences are descriptive, not significance tests.')
+if report['invalid_rows'] or report['unmatched_rows']:
+    st.warning(f"Invalid ZCTA identifiers excluded: {report['invalid_rows']:,}. ZCTAs without state mapping: {report['unmatched_rows']:,}.")
 
-with st.expander('View and download data'):
-    table=summary.copy() if selected_state=='US' else subset[['zcta','state','state_name','rate']].copy()
-    if selected_zcta!='All':
-        table=table[table.zcta==selected_zcta]
-    st.dataframe(table,hide_index=True)
-    st.download_button('Download displayed table',table.to_csv(index=False).encode(),f'sleep_{selected_state}_{selected_zcta}.csv','text/csv')
-    st.download_button('Download all ZCTA-to-state results',data[['zcta','state','state_name','rate','overlap_share']].to_csv(index=False).encode(),'zcta_state_sleep.csv','text/csv')
+all_data = data
+
+def render_indicator(indicator):
+    column = INDICATORS[indicator]
+    data = all_data.copy()
+    data['rate'] = data[column]
+    summary = data.dropna(subset=['state']).groupby(['state','state_name'],as_index=False).agg(rate=('rate','mean'),n=('rate','count'))
+    subset = data if selected_state == 'US' else data[data.state == selected_state]
+    value = subset.rate.mean() if selected_zcta == 'All' else subset.loc[subset.zcta == selected_zcta,'rate'].iloc[0]
+    if not data.rate.notna().any():
+        st.info(f'No valid {indicator.lower()} data available.')
+        return
+
+    st.subheader(f'{indicator} · Geographic pattern')
+    st.caption('Hover to see values. Click a state on the national map to open its ZCTAs. Red outlines mark the selected area. Gray means no data.')
+
+    # Use a common color scale for all state maps and another common scale for all ZCTA maps.
+    def show_national_panel(frame,label,height=470,alaska=False,bounds=None):
+        st.markdown(f'**{label}**')
+        frame=frame.merge(summary[['state','rate','n']],on='state',how='left')
+        m=make_map(frame,'state','state_name',float(summary.rate.min()) if summary.rate.notna().any() else 0,
+                   float(summary.rate.max()) if summary.rate.notna().any() else 100,
+                   selected_state,national=True,alaska=alaska,bounds=bounds,indicator_label=indicator)
+        event=st_folium(m,key=f"national_{indicator}_{label}_{st.session_state.map_epoch}",height=height,
+                       use_container_width=True,returned_objects=['last_object_clicked_popup'])
+        clicked=re.search(r'STATE:([A-Z]{2})',str(event.get('last_object_clicked_popup','')))
+        if clicked:
+            code=clicked.group(1)
+            if code in options:
+                st.session_state['_pending_state']=code
+                st.rerun()
+            else:
+                st.info('This area has no valid ZCTA estimates in the uploaded dataset.')
+
+    if st.session_state.map_depth=='national' or selected_state=='US':
+        contiguous=states[~states.state.isin(['AK','HI','PR','GU','VI','MP','AS'])]
+        show_national_panel(contiguous,'Contiguous United States',500,bounds=[[24,-125],[50,-66]])
+        extras=['AK','HI']+[s for s in ['PR','GU','VI','MP','AS'] if s in summary.state.values]
+        panels=st.columns(min(len(extras),3))
+        for i,code in enumerate(extras):
+            with panels[i%len(panels)]:
+                show_national_panel(states[states.state==code],state_names[code],260,alaska=code=='AK')
+    else:
+        st.button('← Back to national map',on_click=back_to_national,key=f'back_{indicator}')
+        st.markdown(f'**{state_names[selected_state]} · ZCTAs**')
+        shape=state_shapes(selected_state).merge(data[['zcta','rate']],on='zcta',how='left',validate='one_to_one')
+        if shape.empty:
+            st.info('No ZCTA boundaries available for this state.')
+        else:
+            m=make_map(shape,'zcta','zcta',float(data.rate.min()),float(data.rate.max()),
+                       None if selected_zcta=='All' else selected_zcta,alaska=selected_state=='AK',indicator_label=indicator)
+            st_folium(m,key=f"state_{indicator}_{selected_state}_{selected_zcta}_{st.session_state.map_epoch}",
+                      height=540,use_container_width=True,returned_objects=[])
+        st.caption('State-map clicks do not drill down. Use the ZCTA selector to choose a specific area.')
+
+    st.divider()
+    left,right=st.columns(2)
+    chart_data=(summary.rename(columns={'state_name':'Region'}) if selected_state=='US' else subset.rename(columns={'zcta':'Region'})).dropna(subset=['rate'])
+    if chart_data.empty:
+        st.info(f'No valid {indicator.lower()} estimates in this state.')
+        return
+    with left:
+        st.subheader('Distribution of state means' if selected_state=='US' else f'ZCTA distribution · {state_names[selected_state]}')
+        fig=px.histogram(chart_data,x='rate',nbins=20,color_discrete_sequence=['#318b83'],
+                         labels={'rate':f'{indicator} rate (%)'})
+        fig.update_layout(yaxis_title='States / district' if selected_state=='US' else 'ZCTAs',bargap=0.06,margin=dict(l=10,r=10,t=30,b=10))
+        if selected_state!='US':
+            fig.add_vline(x=float(subset.rate.mean()),line_dash='dash',line_color='#475569',annotation_text='State mean')
+        if selected_zcta!='All' and pd.notna(value):
+            fig.add_vline(x=value,line_color='#dc2626',annotation_text=f'ZCTA {selected_zcta}')
+        st.plotly_chart(fig,width='stretch',key=f'{indicator}_distribution')
+    with right:
+        st.subheader('Top 10 states / district' if selected_state=='US' else 'Top 10 ZCTAs in this state')
+        top=chart_data.nlargest(10,'rate').sort_values('rate')
+        fig=px.bar(top,x='rate',y='Region',orientation='h',text='rate',labels={'rate':f'{indicator} rate (%)'})
+        fig.update_traces(marker_color=['#dc2626' if str(x)==selected_zcta else '#318b83' for x in top.Region],texttemplate='%{x:.1f}%',textposition='outside',cliponaxis=False)
+        fig.update_layout(yaxis=dict(type='category',title=None),xaxis_range=[0,float(top.rate.max())*1.17],margin=dict(l=10,r=10,t=30,b=10))
+        st.plotly_chart(fig,width='stretch',key=f'{indicator}_top10')
+    st.caption('Rankings use point estimates; uncertainty intervals are not available in this CSV.')
+
+    with st.expander('View and download data'):
+        table=summary.copy() if selected_state=='US' else subset[['zcta','state','state_name','rate']].copy()
+        if selected_zcta!='All':
+            table=table[table.zcta==selected_zcta]
+        table = table.rename(columns={'rate': f'{indicator} rate (%)'})
+        st.dataframe(table,hide_index=True)
+        st.download_button('Download displayed table',table.to_csv(index=False).encode(),f'{indicator.lower()}_{selected_state}_{selected_zcta}.csv','text/csv')
+        st.download_button('Download all ZCTA-to-state results',data[['zcta','state','state_name','rate','overlap_share']].to_csv(index=False).encode(),f'zcta_state_{indicator.lower()}.csv','text/csv')
+
+# Lazy tabs render just one set of maps; the selection survives region changes.
+def indicator_changed():
+    st.session_state.map_epoch += 1
+
+tabs = st.tabs(list(INDICATORS), default='Sleep', key='indicator_tab', on_change=indicator_changed)
+for name, tab in zip(INDICATORS, tabs):
+    if tab.open:
+        with tab:
+            render_indicator(name)
+
 with st.expander('Methods and coverage'):
     st.write(report)
     st.write('State assignment uses the largest ZCTA–state polygon intersection in equal-area EPSG:6933; exact ties use state code. Each ZCTA belongs to one state for aggregation. Display polygons are simplified after mapping and clipped to that state. A clipped polygon retains the full-ZCTA estimate.')
